@@ -1,25 +1,12 @@
 //! Write the debuginfo into an object file.
 
-use cranelift_module::{DataId, FuncId};
 use cranelift_object::ObjectProduct;
 use gimli::write::{Address, AttributeValue, EndianVec, Result, Sections, Writer};
 use gimli::{RunTimeEndian, SectionId};
 use rustc_data_structures::fx::FxHashMap;
 
-use super::DebugContext;
 use super::object::WriteDebugInfo;
-
-pub(super) fn address_for_func(func_id: FuncId) -> Address {
-    let symbol = func_id.as_u32();
-    assert!(symbol & 1 << 31 == 0);
-    Address::Symbol { symbol: symbol as usize, addend: 0 }
-}
-
-pub(super) fn address_for_data(data_id: DataId) -> Address {
-    let symbol = data_id.as_u32();
-    assert!(symbol & 1 << 31 == 0);
-    Address::Symbol { symbol: (symbol | 1 << 31) as usize, addend: 0 }
-}
+use super::DebugContext;
 
 impl DebugContext {
     pub(crate) fn emit(&mut self, product: &mut ObjectProduct) {
@@ -48,6 +35,23 @@ impl DebugContext {
             }
             Ok(())
         });
+
+        self.add_gdb_debugger_visualizers(product);
+    }
+
+    fn add_gdb_debugger_visualizers(&mut self, product: &mut ObjectProduct) {
+        let mut section = Vec::new(self.endian);
+        section.write(b"\x01gdb_load_rust_pretty_printers.py\0").unwrap();
+
+        for (index, visualizer) in self.gdb_visualizers.iter().enumerate() {
+            let vis_name = format!("\x04pretty-printer-{}-{index}\n", self.crate_name);
+
+            section.write(vis_name.as_bytes()).unwrap();
+            section.write(&visualizer.src).unwrap();
+
+            section.write(b"\0").unwrap();
+        }
+        product.add_gdb_visualizers_section(section.writer.take());
     }
 }
 
@@ -184,7 +188,6 @@ impl Writer for WriterRelocate {
                 gimli::DW_EH_PE_pcrel => {
                     let size = match eh_pe.format() {
                         gimli::DW_EH_PE_sdata4 => 4,
-                        gimli::DW_EH_PE_sdata8 => 8,
                         _ => return Err(gimli::write::Error::UnsupportedPointerEncoding(eh_pe)),
                     };
                     self.relocs.push(DebugReloc {
